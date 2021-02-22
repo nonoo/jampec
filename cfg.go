@@ -5,9 +5,10 @@ import (
 	"os"
 )
 
-type Config struct {
-	WindowWidth    int `json:"windowWidth"`
-	WindowHeight   int `json:"windowHeight"`
+type DevConfig struct {
+	Disabled       bool `json:"disabled"`
+	WindowWidth    int  `json:"windowWidth"`
+	WindowHeight   int  `json:"windowHeight"`
 	ImageTransform struct {
 		Grayscale       bool `json:"grayscale"`
 		BlurSize        int  `json:"blurSize"`
@@ -16,7 +17,7 @@ type Config struct {
 	} `json:"imageTransform"`
 }
 
-var config Config
+var configs []DevConfig
 
 func loadConfig(filename string) error {
 	f, err := os.Open(filename)
@@ -26,17 +27,21 @@ func loadConfig(filename string) error {
 
 	defer f.Close()
 
-	err = json.NewDecoder(f).Decode(&config)
+	err = json.NewDecoder(f).Decode(&configs)
 
 	if err != nil {
 		return err
 	}
 
-	if config.WindowWidth == 0 {
-		config.WindowWidth = 1280
+	// Checking some needed values.
+	for i := range configs {
+		if configs[i].WindowWidth == 0 {
+			configs[i].WindowWidth = 1280
+		}
+		if configs[i].WindowHeight == 0 {
+			configs[i].WindowHeight = 720
+		}
 	}
-	if config.WindowHeight == 0 {
-		config.WindowHeight = 720
-	}
+
 	return nil
 }

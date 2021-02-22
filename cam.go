@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 
@@ -10,6 +11,7 @@ import (
 )
 
 type camStruct struct {
+	config            DevConfig
 	errChan           chan error
 	stopRequestedChan chan bool
 	stopFinishedChan  chan bool
@@ -130,30 +132,30 @@ trackLoop:
 			break trackLoop
 		}
 
-		if config.ImageTransform.Grayscale {
+		if s.config.ImageTransform.Grayscale {
 			gocv.CvtColor(*img, &img2, gocv.ColorBGRAToGray)
 		} else {
 			img.CopyTo(&img2)
 		}
 		img.Close()
 
-		if config.ImageTransform.BlurSize > 0 {
-			gocv.GaussianBlur(img2, &img1, image.Point{config.ImageTransform.BlurSize, config.ImageTransform.BlurSize}, 0, 0, gocv.BorderDefault)
+		if s.config.ImageTransform.BlurSize > 0 {
+			gocv.GaussianBlur(img2, &img1, image.Point{s.config.ImageTransform.BlurSize, s.config.ImageTransform.BlurSize}, 0, 0, gocv.BorderDefault)
 		} else {
 			img2.CopyTo(&img1)
 		}
-		if config.ImageTransform.BinaryThreshold > 0 {
+		if s.config.ImageTransform.BinaryThreshold > 0 {
 			gocv.Threshold(img1, &img2, 200, 255, gocv.ThresholdBinary)
 		} else {
 			img1.CopyTo(&img2)
 		}
-		if config.ImageTransform.ErodeDilate {
+		if s.config.ImageTransform.ErodeDilate {
 			tmpImg.SetTo(gocv.Scalar{})
 			gocv.Erode(img2, &img1, tmpImg)
 			tmpImg.SetTo(gocv.Scalar{})
 			gocv.Dilate(img1, &img2, tmpImg)
 		}
-		if config.ImageTransform.Grayscale {
+		if s.config.ImageTransform.Grayscale {
 			gocv.CvtColor(img2, &img1, gocv.ColorGrayToBGR)
 			img1.CopyTo(&img2)
 		}
@@ -276,18 +278,20 @@ mainLoop:
 	s.stopFinishedChan <- true
 }
 
-func (s *camStruct) init() error {
+func (s *camStruct) init(errChan chan error, devNum int, config DevConfig) error {
+	s.config = config
+	s.errChan = errChan
 	s.reinitTrackerChan = make(chan *image.Rectangle)
 
 	var err error
-	s.cam, err = gocv.VideoCaptureDevice(0)
+	s.cam, err = gocv.VideoCaptureDevice(devNum)
 	if err != nil {
-		return errors.New("can't open video capture device 0")
+		return fmt.Errorf("can't open video capture device %d", devNum)
 	}
 
 	s.window = gocv.NewWindow("jampec")
 
-	s.window.ResizeWindow(config.WindowWidth, config.WindowHeight)
+	s.window.ResizeWindow(s.config.WindowWidth, s.config.WindowHeight)
 
 	// Implementation from https://github.com/hybridgroup/gocv/pull/603/commits/410d1a795b55b6bbca775b5e36401c65fb05ebc5
 	s.window.SetMouseCallback(s.onMouseClick)
@@ -295,7 +299,6 @@ func (s *camStruct) init() error {
 	s.selectedRectColor = color.RGBA{255, 0, 0, 0}
 	s.trackerRectColor = color.RGBA{0, 255, 0, 0}
 
-	s.errChan = make(chan error)
 	s.stopRequestedChan = make(chan bool)
 	s.stopFinishedChan = make(chan bool)
 

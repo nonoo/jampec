@@ -1,10 +1,23 @@
-{
-	"windowWidth": 1280,
-	"windowHeight": 720,
-	"imageTransform": {
-		"grayscale": true,
-		"blurSize": 1,
-		"binaryThreshold": 200,
-		"erodeDilate": true
+[
+	{
+		"windowWidth": 1280,
+		"windowHeight": 720,
+		"imageTransform": {
+			"grayscale": true,
+			"blurSize": 1,
+			"binaryThreshold": 200,
+			"erodeDilate": true
+		}
+	},
+	{
+		"disabled": true,
+		"windowWidth": 1280,
+		"windowHeight": 720,
+		"imageTransform": {
+			"grayscale": true,
+			"blurSize": 1,
+			"binaryThreshold": 200,
+			"erodeDilate": true
+		}
 	}
-}
+]
