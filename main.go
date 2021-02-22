@@ -12,14 +12,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	errChan := make(chan error)
+	errChan := make(chan error, len(configs))
 	var cams []camStruct
 	for i := range configs {
 		if configs[i].Disabled {
 			continue
 		}
 		newCam := camStruct{}
-		err := newCam.init(errChan, i, configs[i])
+		err := newCam.init(errChan, configs[i])
 		if err != nil {
 			log.Error(err.Error())
 			os.Exit(1)
@@ -30,10 +30,9 @@ func main() {
 	}
 
 	err := <-errChan
-	for _, cam := range cams {
-		cam.stopRequestedChan <- true
-		<-cam.stopFinishedChan
-		cam.deinit()
+	for i := range cams {
+		cams[i].stopRequestedChan <- true
+		<-cams[i].stopFinishedChan
 	}
 
 	if err != nil {

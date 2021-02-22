@@ -7,6 +7,7 @@ import (
 
 type DevConfig struct {
 	Disabled       bool `json:"disabled"`
+	DevNum         int  `json:"devNum"`
 	WindowWidth    int  `json:"windowWidth"`
 	WindowHeight   int  `json:"windowHeight"`
 	ImageTransform struct {

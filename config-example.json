@@ -1,5 +1,7 @@
 [
 	{
+		"disabled": false,
+		"devNum": 0,
 		"windowWidth": 1280,
 		"windowHeight": 720,
 		"imageTransform": {
@@ -11,6 +13,7 @@
 	},
 	{
 		"disabled": true,
+		"devNum": 3,
 		"windowWidth": 1280,
 		"windowHeight": 720,
 		"imageTransform": {

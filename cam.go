@@ -41,6 +41,8 @@ func (s *camStruct) onMouseClick(event gocv.MouseEventType, x, y int, flags gocv
 		s.selectedRectSelecting = true
 		s.selectedRect.Min.X = x
 		s.selectedRect.Min.Y = y
+		s.selectedRect.Max.X = x
+		s.selectedRect.Max.Y = y
 	case gocv.MouseEventLeftButtonUp:
 		if s.selectedRectSelecting {
 			s.selectedRect.Max.X = x
@@ -205,8 +207,6 @@ trackLoop:
 }
 
 func (s *camStruct) loop() {
-	var exitError error
-
 	camReadImgChan := make(chan *gocv.Mat, 25)
 	camReadErrChan := make(chan error)
 	camReadStopRequestedChan := make(chan bool)
@@ -223,9 +223,15 @@ func (s *camStruct) loop() {
 mainLoop:
 	for {
 		select {
-		case exitError = <-camReadErrChan:
+		case err := <-camReadErrChan:
+			s.errChan <- err
+			<-s.stopRequestedChan
 			break mainLoop
-		case exitError = <-trackErrChan:
+		case err := <-trackErrChan:
+			s.errChan <- err
+			<-s.stopRequestedChan
+			break mainLoop
+		case <-s.stopRequestedChan:
 			break mainLoop
 		default:
 		}
@@ -258,11 +264,15 @@ mainLoop:
 		k := s.window.WaitKey(1)
 		switch k {
 		case 27: // Esc
+			s.errChan <- nil
+			<-s.stopRequestedChan
 			break mainLoop
 		}
 
 		// Window closed?
 		if s.window.GetWindowProperty(gocv.WindowPropertyFullscreen) < 0 {
+			s.errChan <- nil
+			<-s.stopRequestedChan
 			break mainLoop
 		}
 	}
@@ -273,23 +283,28 @@ mainLoop:
 	trackStopRequestedChan <- true
 	<-trackStopFinishedChan
 
-	s.errChan <- exitError
-	<-s.stopRequestedChan
+	if s.cam != nil {
+		s.cam.Close()
+	}
+	if s.window != nil {
+		s.window.Close()
+	}
+
 	s.stopFinishedChan <- true
 }
 
-func (s *camStruct) init(errChan chan error, devNum int, config DevConfig) error {
+func (s *camStruct) init(errChan chan error, config DevConfig) error {
 	s.config = config
 	s.errChan = errChan
 	s.reinitTrackerChan = make(chan *image.Rectangle)
 
 	var err error
-	s.cam, err = gocv.VideoCaptureDevice(devNum)
+	s.cam, err = gocv.VideoCaptureDevice(s.config.DevNum)
 	if err != nil {
-		return fmt.Errorf("can't open video capture device %d", devNum)
+		return fmt.Errorf("can't open video capture device %d", s.config.DevNum)
 	}
 
-	s.window = gocv.NewWindow("jampec")
+	s.window = gocv.NewWindow(fmt.Sprint("jampec video", s.config.DevNum))
 
 	s.window.ResizeWindow(s.config.WindowWidth, s.config.WindowHeight)
 
@@ -303,13 +318,4 @@ func (s *camStruct) init(errChan chan error, devNum int, config DevConfig) error
 	s.stopFinishedChan = make(chan bool)
 
 	return nil
-}
-
-func (s *camStruct) deinit() {
-	if s.cam != nil {
-		s.cam.Close()
-	}
-	if s.window != nil {
-		s.window.Close()
-	}
 }
