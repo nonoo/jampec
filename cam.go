@@ -17,21 +17,20 @@ type camStruct struct {
 	cam    *gocv.VideoCapture
 	window *gocv.Window
 
-	img1    gocv.Mat
-	img2    gocv.Mat
-	tmpImg  gocv.Mat
 	imgSize image.Point
 
-	tracker            gocv.Tracker
-	trackerInitialized bool
-	trackerRectColor   color.RGBA
+	trackerRectColor color.RGBA
 
 	selectedRect          image.Rectangle
 	selectedRectColor     color.RGBA
 	selectedRectSelecting bool
-	selectedRectAvailable bool
 
-	reinitTrackerChan chan image.Rectangle
+	reinitTrackerChan chan *image.Rectangle
+}
+
+type trackData struct {
+	img  gocv.Mat
+	rect image.Rectangle
 }
 
 func (s *camStruct) onMouseClick(event gocv.MouseEventType, x, y int, flags gocv.MouseEventFlag) {
@@ -41,36 +40,33 @@ func (s *camStruct) onMouseClick(event gocv.MouseEventType, x, y int, flags gocv
 		s.selectedRect.Min.X = x
 		s.selectedRect.Min.Y = y
 	case gocv.MouseEventLeftButtonUp:
-		s.selectedRect.Max.X = x
-		s.selectedRect.Max.Y = y
-		s.selectedRect = s.selectedRect.Canon()
+		if s.selectedRectSelecting {
+			s.selectedRect.Max.X = x
+			s.selectedRect.Max.Y = y
+			s.selectedRect = s.selectedRect.Canon()
 
-		if s.selectedRect.Max.X > s.imgSize.X {
-			s.selectedRect.Max.X = s.imgSize.X
+			if !s.selectedRect.Empty() {
+				if s.selectedRect.Max.X > s.imgSize.X {
+					s.selectedRect.Max.X = s.imgSize.X
+				}
+				if s.selectedRect.Max.Y > s.imgSize.Y {
+					s.selectedRect.Max.Y = s.imgSize.Y
+				}
+				s.reinitTrackerChan <- &s.selectedRect
+			}
 		}
-		if s.selectedRect.Max.Y > s.imgSize.Y {
-			s.selectedRect.Max.Y = s.imgSize.Y
-		}
-
-		// Cancelled?
-		if !s.selectedRectAvailable || s.selectedRect.Dx() == 0 || s.selectedRect.Dy() == 0 {
-			s.selectedRectSelecting = false
-			s.selectedRectAvailable = false
-			break
-		}
-
 		s.selectedRectSelecting = false
-		s.selectedRectAvailable = false
-		s.reinitTrackerChan <- s.selectedRect
 	case gocv.MouseEventMove:
 		if s.selectedRectSelecting {
 			s.selectedRect.Max.X = x
 			s.selectedRect.Max.Y = y
-			s.selectedRectAvailable = true
 		}
 	case gocv.MouseEventRightButtonUp: // Cancel
+		if !s.selectedRectSelecting {
+			s.selectedRect = image.Rectangle{}
+			s.reinitTrackerChan <- &s.selectedRect
+		}
 		s.selectedRectSelecting = false
-		s.selectedRectAvailable = false
 	}
 }
 
@@ -78,28 +74,132 @@ func (s *camStruct) camReadLoop(imgChan chan *gocv.Mat, errChan chan error, stop
 	stopFinishedChan chan bool) {
 
 	img := gocv.NewMat()
+	defer img.Close()
 
+camReadLoop:
 	for {
 		select {
 		case <-stopRequestedChan:
-			stopFinishedChan <- true
-			return
+			break camReadLoop
 		default:
 		}
 
 		if ok := s.cam.Read(&img); !ok {
 			errChan <- errors.New("error reading camera")
 			<-stopRequestedChan
-			stopFinishedChan <- true
-			return
+			break camReadLoop
 		}
 		if img.Empty() {
 			continue
 		}
 
 		i := img.Clone()
-		imgChan <- &i
+		select {
+		case imgChan <- &i:
+		case <-stopRequestedChan:
+			break camReadLoop
+		}
 	}
+
+	stopFinishedChan <- true
+}
+
+func (s *camStruct) trackLoop(imgToTrackChan chan *gocv.Mat, trackDataChan chan *trackData,
+	errChan chan error, stopRequestedChan chan bool, stopFinishedChan chan bool) {
+
+	var img *gocv.Mat
+
+	img1 := gocv.NewMat()
+	defer img1.Close()
+	img2 := gocv.NewMat()
+	defer img2.Close()
+	tmpImg := gocv.NewMat()
+	defer tmpImg.Close()
+
+	var reinitTrackerRect *image.Rectangle
+	var tracker gocv.Tracker
+	var trackerInitialized bool
+
+trackLoop:
+	for {
+		select {
+		case img = <-imgToTrackChan:
+		case reinitTrackerRect = <-s.reinitTrackerChan:
+			continue
+		case <-stopRequestedChan:
+			break trackLoop
+		}
+
+		if config.ImageTransform.Grayscale {
+			gocv.CvtColor(*img, &img2, gocv.ColorBGRAToGray)
+		} else {
+			img.CopyTo(&img2)
+		}
+		img.Close()
+
+		if config.ImageTransform.BlurSize > 0 {
+			gocv.GaussianBlur(img2, &img1, image.Point{config.ImageTransform.BlurSize, config.ImageTransform.BlurSize}, 0, 0, gocv.BorderDefault)
+		} else {
+			img2.CopyTo(&img1)
+		}
+		if config.ImageTransform.BinaryThreshold > 0 {
+			gocv.Threshold(img1, &img2, 200, 255, gocv.ThresholdBinary)
+		} else {
+			img1.CopyTo(&img2)
+		}
+		if config.ImageTransform.ErodeDilate {
+			tmpImg.SetTo(gocv.Scalar{})
+			gocv.Erode(img2, &img1, tmpImg)
+			tmpImg.SetTo(gocv.Scalar{})
+			gocv.Dilate(img1, &img2, tmpImg)
+		}
+		if config.ImageTransform.Grayscale {
+			gocv.CvtColor(img2, &img1, gocv.ColorGrayToBGR)
+			img1.CopyTo(&img2)
+		}
+
+		if reinitTrackerRect != nil {
+			if trackerInitialized {
+				tracker.Close()
+				trackerInitialized = false
+			}
+			if !reinitTrackerRect.Empty() {
+				tracker = contrib.NewTrackerCSRT()
+				if !tracker.Init(img2, *reinitTrackerRect) {
+					errChan <- errors.New("can't init tracker")
+					<-stopRequestedChan
+					break trackLoop
+				}
+				trackerInitialized = true
+			}
+			reinitTrackerRect = nil
+		}
+
+		var trackRect image.Rectangle
+		if trackerInitialized {
+			trackRect, _ = tracker.Update(img2)
+		}
+
+		td := trackData{
+			img:  img2.Clone(),
+			rect: trackRect,
+		}
+
+		select {
+		case trackDataChan <- &td:
+		case <-stopRequestedChan:
+			break trackLoop
+		}
+	}
+
+	if img != nil {
+		img.Close()
+	}
+	if trackerInitialized {
+		tracker.Close()
+	}
+
+	stopFinishedChan <- true
 }
 
 func (s *camStruct) loop() {
@@ -109,13 +209,21 @@ func (s *camStruct) loop() {
 	camReadErrChan := make(chan error)
 	camReadStopRequestedChan := make(chan bool)
 	camReadStopFinishedChan := make(chan bool)
-
 	go s.camReadLoop(camReadImgChan, camReadErrChan, camReadStopRequestedChan, camReadStopFinishedChan)
+
+	trackImgChan := make(chan *gocv.Mat, 25)
+	trackDataChan := make(chan *trackData)
+	trackErrChan := make(chan error)
+	trackStopRequestedChan := make(chan bool)
+	trackStopFinishedChan := make(chan bool)
+	go s.trackLoop(trackImgChan, trackDataChan, trackErrChan, trackStopRequestedChan, trackStopFinishedChan)
 
 mainLoop:
 	for {
 		select {
 		case exitError = <-camReadErrChan:
+			break mainLoop
+		case exitError = <-trackErrChan:
 			break mainLoop
 		default:
 		}
@@ -126,65 +234,24 @@ mainLoop:
 		s.imgSize.X = size[1]
 		s.imgSize.Y = size[0]
 
-		if config.ImageTransform.Grayscale {
-			gocv.CvtColor(*origImg, &s.img2, gocv.ColorBGRAToGray)
-		} else {
-			origImg.CopyTo(&s.img2)
-		}
-		origImg.Close()
+		trackImgChan <- origImg
 
-		if config.ImageTransform.BlurSize > 0 {
-			gocv.GaussianBlur(s.img2, &s.img1, image.Point{config.ImageTransform.BlurSize, config.ImageTransform.BlurSize}, 0, 0, gocv.BorderDefault)
-		} else {
-			s.img2.CopyTo(&s.img1)
-		}
-		if config.ImageTransform.BinaryThreshold > 0 {
-			gocv.Threshold(s.img1, &s.img2, 200, 255, gocv.ThresholdBinary)
-		} else {
-			s.img1.CopyTo(&s.img2)
-		}
-		if config.ImageTransform.ErodeDilate {
-			s.tmpImg.SetTo(gocv.Scalar{})
-			gocv.Erode(s.img2, &s.img1, s.tmpImg)
-			s.tmpImg.SetTo(gocv.Scalar{})
-			gocv.Dilate(s.img1, &s.img2, s.tmpImg)
-		}
-		if config.ImageTransform.Grayscale {
-			gocv.CvtColor(s.img2, &s.img1, gocv.ColorGrayToBGR)
-			s.img1.CopyTo(&s.img2)
-		}
+		td := <-trackDataChan
+		img := &td.img
 
-		select {
-		case r := <-s.reinitTrackerChan:
-			if s.trackerInitialized {
-				s.tracker.Close()
-			}
-			s.tracker = contrib.NewTrackerCSRT()
-			if !s.tracker.Init(s.img2, r) {
-				exitError = errors.New("can't init tracker")
-				break mainLoop
-			}
-			s.trackerInitialized = true
-		default:
-		}
-
-		var trackRect image.Rectangle
-		if s.trackerInitialized {
-			trackRect, _ = s.tracker.Update(s.img2)
-		}
-
-		if s.selectedRectAvailable {
-			gocv.Rectangle(&s.img2, s.selectedRect, s.selectedRectColor, 2)
-		}
-
-		if s.trackerInitialized {
-			gocv.Rectangle(&s.img2, trackRect, s.trackerRectColor, 2)
+		if !td.rect.Empty() {
+			gocv.Rectangle(img, td.rect, s.trackerRectColor, 2)
 			textSize := gocv.GetTextSize("Tracking", gocv.FontHersheyPlain, 1.2, 2)
-			pt := image.Pt(trackRect.Max.X-textSize.X, trackRect.Min.Y-5)
-			gocv.PutText(&s.img2, "Tracking", pt, gocv.FontHersheyPlain, 1.2, s.trackerRectColor, 2)
+			pt := image.Pt(td.rect.Max.X-textSize.X, td.rect.Min.Y-5)
+			gocv.PutText(img, "Tracking", pt, gocv.FontHersheyPlain, 1.2, s.trackerRectColor, 2)
 		}
 
-		s.window.IMShow(s.img2)
+		if s.selectedRectSelecting {
+			gocv.Rectangle(img, s.selectedRect, s.selectedRectColor, 2)
+		}
+
+		s.window.IMShow(*img)
+		img.Close()
 
 		k := s.window.WaitKey(1)
 		switch k {
@@ -201,13 +268,16 @@ mainLoop:
 	camReadStopRequestedChan <- true
 	<-camReadStopFinishedChan
 
+	trackStopRequestedChan <- true
+	<-trackStopFinishedChan
+
 	s.errChan <- exitError
 	<-s.stopRequestedChan
 	s.stopFinishedChan <- true
 }
 
 func (s *camStruct) init() error {
-	s.reinitTrackerChan = make(chan image.Rectangle, 1)
+	s.reinitTrackerChan = make(chan *image.Rectangle)
 
 	var err error
 	s.cam, err = gocv.VideoCaptureDevice(0)
@@ -216,10 +286,6 @@ func (s *camStruct) init() error {
 	}
 
 	s.window = gocv.NewWindow("jampec")
-
-	s.img1 = gocv.NewMat()
-	s.img2 = gocv.NewMat()
-	s.tmpImg = gocv.NewMat()
 
 	s.window.ResizeWindow(config.WindowWidth, config.WindowHeight)
 
@@ -243,7 +309,4 @@ func (s *camStruct) deinit() {
 	if s.window != nil {
 		s.window.Close()
 	}
-	s.img1.Close()
-	s.img2.Close()
-	s.tmpImg.Close()
 }
