@@ -11,8 +11,10 @@ import (
 )
 
 type camStruct struct {
+	nr                int
 	config            DevConfig
-	errChan           chan error
+	ctrlOutChan       chan ctrlMsg
+	ctrlInChan        chan ctrlMsg
 	stopRequestedChan chan bool
 	stopFinishedChan  chan bool
 
@@ -21,7 +23,9 @@ type camStruct struct {
 
 	imgSize image.Point
 
-	trackerRectColor color.RGBA
+	trackerRectColor              color.RGBA
+	controlActiveTrackerRectColor color.RGBA
+	controlActive                 bool
 
 	selectedRect          image.Rectangle
 	selectedRectColor     color.RGBA
@@ -206,6 +210,22 @@ trackLoop:
 	stopFinishedChan <- true
 }
 
+// Returns true if exit is needed.
+func (s *camStruct) checkKeyPress() bool {
+	k := s.window.WaitKey(1)
+	if k >= '0' && k <= '9' {
+		s.ctrlOutChan <- ctrlMsg{msgType: ctrlMsgTypeActive, value1: k - '0'}
+	} else {
+		switch k {
+		case 27: // Esc
+			s.ctrlOutChan <- ctrlMsg{msgType: ctrlMsgTypeExit}
+			<-s.stopRequestedChan
+			return true
+		}
+	}
+	return false
+}
+
 func (s *camStruct) loop() {
 	camReadImgChan := make(chan *gocv.Mat, 25)
 	camReadErrChan := make(chan error)
@@ -223,12 +243,22 @@ func (s *camStruct) loop() {
 mainLoop:
 	for {
 		select {
+		case msg := <-s.ctrlInChan:
+			switch msg.msgType {
+			case ctrlMsgTypeActive:
+				v, _ := msg.value2.(bool)
+				if v {
+					s.controlActive = !s.controlActive
+				} else {
+					s.controlActive = false
+				}
+			}
 		case err := <-camReadErrChan:
-			s.errChan <- err
+			s.ctrlOutChan <- ctrlMsg{msgType: ctrlMsgTypeExit, value1: err}
 			<-s.stopRequestedChan
 			break mainLoop
 		case err := <-trackErrChan:
-			s.errChan <- err
+			s.ctrlOutChan <- ctrlMsg{msgType: ctrlMsgTypeExit, value1: err}
 			<-s.stopRequestedChan
 			break mainLoop
 		case <-s.stopRequestedChan:
@@ -247,11 +277,23 @@ mainLoop:
 		td := <-trackDataChan
 		img := &td.img
 
+		if s.controlActive {
+			gocv.PutText(img, "ACT", image.Point{X: 5, Y: 20}, gocv.FontHersheyPlain, 1.4,
+				s.controlActiveTrackerRectColor, 1)
+		}
+
 		if !td.rect.Empty() {
-			gocv.Rectangle(img, td.rect, s.trackerRectColor, 2)
+			var color *color.RGBA
+			if s.controlActive {
+				color = &s.controlActiveTrackerRectColor
+			} else {
+				color = &s.trackerRectColor
+			}
+
+			gocv.Rectangle(img, td.rect, *color, 2)
 			textSize := gocv.GetTextSize("Tracking", gocv.FontHersheyPlain, 1.2, 2)
 			pt := image.Pt(td.rect.Max.X-textSize.X, td.rect.Min.Y-5)
-			gocv.PutText(img, "Tracking", pt, gocv.FontHersheyPlain, 1.2, s.trackerRectColor, 2)
+			gocv.PutText(img, "Tracking", pt, gocv.FontHersheyPlain, 1.2, *color, 2)
 		}
 
 		if s.selectedRectSelecting {
@@ -261,17 +303,15 @@ mainLoop:
 		s.window.IMShow(*img)
 		img.Close()
 
-		k := s.window.WaitKey(1)
-		switch k {
-		case 27: // Esc
-			s.errChan <- nil
-			<-s.stopRequestedChan
+		// OpenCV does not indicate which window the key was pressed in so we only check keypresses
+		// in the first window.
+		if s.nr == 0 && s.checkKeyPress() {
 			break mainLoop
 		}
 
 		// Window closed?
 		if s.window.GetWindowProperty(gocv.WindowPropertyFullscreen) < 0 {
-			s.errChan <- nil
+			s.ctrlOutChan <- ctrlMsg{msgType: ctrlMsgTypeExit}
 			<-s.stopRequestedChan
 			break mainLoop
 		}
@@ -293,9 +333,11 @@ mainLoop:
 	s.stopFinishedChan <- true
 }
 
-func (s *camStruct) init(errChan chan error, config DevConfig) error {
+func (s *camStruct) init(config DevConfig, nr int) error {
+	s.nr = nr
 	s.config = config
-	s.errChan = errChan
+	s.ctrlInChan = make(chan ctrlMsg)
+	s.ctrlOutChan = make(chan ctrlMsg)
 	s.reinitTrackerChan = make(chan *image.Rectangle)
 
 	var err error
@@ -312,7 +354,8 @@ func (s *camStruct) init(errChan chan error, config DevConfig) error {
 	s.window.SetMouseCallback(s.onMouseClick)
 
 	s.selectedRectColor = color.RGBA{255, 0, 0, 0}
-	s.trackerRectColor = color.RGBA{0, 255, 0, 0}
+	s.trackerRectColor = color.RGBA{0, 100, 100, 100}
+	s.controlActiveTrackerRectColor = color.RGBA{0, 255, 0, 0}
 
 	s.stopRequestedChan = make(chan bool)
 	s.stopFinishedChan = make(chan bool)
