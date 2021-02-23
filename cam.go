@@ -21,7 +21,8 @@ type camStruct struct {
 	cam    *gocv.VideoCapture
 	window *gocv.Window
 
-	imgSize image.Point
+	imgSize       image.Point
+	showOrigImage bool
 
 	trackerRectColor              color.RGBA
 	controlActiveTrackerRectColor color.RGBA
@@ -78,7 +79,7 @@ func (s *camStruct) onMouseClick(event gocv.MouseEventType, x, y int, flags gocv
 	}
 }
 
-func (s *camStruct) camReadLoop(imgChan chan *gocv.Mat, errChan chan error, stopRequestedChan chan bool,
+func (s *camStruct) camReadLoop(imgChan chan gocv.Mat, errChan chan error, stopRequestedChan chan bool,
 	stopFinishedChan chan bool) {
 
 	img := gocv.NewMat()
@@ -101,9 +102,8 @@ camReadLoop:
 			continue
 		}
 
-		i := img.Clone()
 		select {
-		case imgChan <- &i:
+		case imgChan <- img.Clone():
 		case <-stopRequestedChan:
 			break camReadLoop
 		}
@@ -112,10 +112,10 @@ camReadLoop:
 	stopFinishedChan <- true
 }
 
-func (s *camStruct) trackLoop(imgToTrackChan chan *gocv.Mat, trackDataChan chan *trackData,
+func (s *camStruct) trackLoop(imgToTrackChan chan gocv.Mat, trackDataChan chan *trackData,
 	errChan chan error, stopRequestedChan chan bool, stopFinishedChan chan bool) {
 
-	var img *gocv.Mat
+	var img gocv.Mat
 
 	img1 := gocv.NewMat()
 	defer img1.Close()
@@ -139,7 +139,7 @@ trackLoop:
 		}
 
 		if s.config.ImageTransform.Grayscale {
-			gocv.CvtColor(*img, &img2, gocv.ColorBGRAToGray)
+			gocv.CvtColor(img, &img2, gocv.ColorBGRAToGray)
 		} else {
 			img.CopyTo(&img2)
 		}
@@ -200,9 +200,7 @@ trackLoop:
 		}
 	}
 
-	if img != nil {
-		img.Close()
-	}
+	img.Close()
 	if trackerInitialized {
 		tracker.Close()
 	}
@@ -221,19 +219,21 @@ func (s *camStruct) checkKeyPress() bool {
 			s.ctrlOutChan <- ctrlMsg{msgType: ctrlMsgTypeExit}
 			<-s.stopRequestedChan
 			return true
+		case 'o':
+			s.ctrlOutChan <- ctrlMsg{msgType: ctrlMsgTypeShowOriginalImage, value1: !s.showOrigImage}
 		}
 	}
 	return false
 }
 
 func (s *camStruct) loop() {
-	camReadImgChan := make(chan *gocv.Mat, 25)
+	camReadImgChan := make(chan gocv.Mat, 25)
 	camReadErrChan := make(chan error)
 	camReadStopRequestedChan := make(chan bool)
 	camReadStopFinishedChan := make(chan bool)
 	go s.camReadLoop(camReadImgChan, camReadErrChan, camReadStopRequestedChan, camReadStopFinishedChan)
 
-	trackImgChan := make(chan *gocv.Mat, 25)
+	trackImgChan := make(chan gocv.Mat, 25)
 	trackDataChan := make(chan *trackData)
 	trackErrChan := make(chan error)
 	trackStopRequestedChan := make(chan bool)
@@ -252,6 +252,9 @@ mainLoop:
 				} else {
 					s.controlActive = false
 				}
+			case ctrlMsgTypeShowOriginalImage:
+				v, _ := msg.value1.(bool)
+				s.showOrigImage = v
 			}
 		case err := <-camReadErrChan:
 			s.ctrlOutChan <- ctrlMsg{msgType: ctrlMsgTypeExit, value1: err}
@@ -272,10 +275,19 @@ mainLoop:
 		s.imgSize.X = size[1]
 		s.imgSize.Y = size[0]
 
+		var img *gocv.Mat
+		if s.showOrigImage {
+			i := origImg.Clone()
+			img = &i
+		}
+
 		trackImgChan <- origImg
 
 		td := <-trackDataChan
-		img := &td.img
+
+		if !s.showOrigImage {
+			img = &td.img
+		}
 
 		if s.controlActive {
 			gocv.PutText(img, "ACT", image.Point{X: 5, Y: 20}, gocv.FontHersheyPlain, 1.4,
@@ -354,7 +366,7 @@ func (s *camStruct) init(config DevConfig, nr int) error {
 	s.window.SetMouseCallback(s.onMouseClick)
 
 	s.selectedRectColor = color.RGBA{255, 0, 0, 0}
-	s.trackerRectColor = color.RGBA{0, 100, 100, 100}
+	s.trackerRectColor = color.RGBA{100, 100, 100, 0}
 	s.controlActiveTrackerRectColor = color.RGBA{0, 255, 0, 0}
 
 	s.stopRequestedChan = make(chan bool)

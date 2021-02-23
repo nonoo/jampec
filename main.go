@@ -8,8 +8,9 @@ import (
 type ctrlMsgType int
 
 const (
-	ctrlMsgTypeExit = ctrlMsgType(iota) // value1: cam nr, value2: true/false
-	ctrlMsgTypeActive
+	ctrlMsgTypeExit              = ctrlMsgType(iota) // value1: error
+	ctrlMsgTypeActive                                // value1: cam nr, value2: true/false
+	ctrlMsgTypeShowOriginalImage                     // value1: true/false
 )
 
 type ctrlMsg struct {
@@ -78,6 +79,10 @@ func main() {
 			}
 			if nr >= 0 {
 				cams[nr].ctrlInChan <- ctrlMsg{msgType: ctrlMsgTypeActive, value2: true}
+			}
+		case ctrlMsgTypeShowOriginalImage:
+			for i := range cams {
+				cams[i].ctrlInChan <- ctrlMsg{msgType: ctrlMsgTypeShowOriginalImage, value1: msg.value1}
 			}
 		}
 	}
